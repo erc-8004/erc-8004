@@ -38,11 +38,11 @@ contract ValidationRegistry {
         uint256 lastUpdate;
     }
 
-    // requestHash => validation status
-    mapping(bytes32 => ValidationStatus) public validations;
-
     // agentId => list of requestHashes
     mapping(uint256 => bytes32[]) private _agentValidations;
+
+    // requestHash => validation status
+    mapping(bytes32 => ValidationStatus) public validations;
 
     // validatorAddress => list of requestHashes
     mapping(address => bytes32[]) private _validatorRequests;

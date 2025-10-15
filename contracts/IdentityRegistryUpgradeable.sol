@@ -12,11 +12,10 @@ contract IdentityRegistryUpgradeable is
     OwnableUpgradeable,
     UUPSUpgradeable
 {
-    uint256 private _lastId;
-
     // agentId => key => value
     mapping(uint256 => mapping(string => bytes)) private _metadata;
 
+    uint256 private _lastId;
     struct MetadataEntry {
         string key;
         bytes value;

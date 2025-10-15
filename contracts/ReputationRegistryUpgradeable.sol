@@ -76,8 +76,8 @@ contract ReputationRegistryUpgradeable is Initializable, OwnableUpgradeable, UUP
     mapping(uint256 => mapping(address => mapping(uint64 => mapping(address => bool)))) private _responderExists;
 
     // Track all unique clients that have given feedback for each agent
-    mapping(uint256 => address[]) private _clients;
     mapping(uint256 => mapping(address => bool)) private _clientExists;
+    mapping(uint256 => address[]) private _clients;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {

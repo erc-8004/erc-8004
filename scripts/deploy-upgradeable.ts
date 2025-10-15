@@ -1,14 +1,40 @@
 import hre from "hardhat";
-import { getCreate2Address, keccak256, encodeAbiParameters } from "viem";
+import { getCreate2Address, keccak256, encodeAbiParameters, toHex } from "viem";
 
 /**
- * Deploy script for ERC-8004 upgradeable contracts using UUPS proxy pattern
- *
- * This script:
- * 1. Deploys implementation contracts for all three registries
- * 2. Deploys ERC1967Proxy for each implementation
- * 3. Initializes each proxy with appropriate parameters
- * 4. Returns proxy addresses for interaction
+ * Find a salt that produces a CREATE2 address with the desired prefix
+ */
+function findVanitySalt(
+  deployer: `0x${string}`,
+  initCodeHash: `0x${string}`,
+  desiredPrefix: string,
+  maxIterations: number = 100000000
+): { salt: `0x${string}`; address: `0x${string}` } | null {
+  const prefix = desiredPrefix.toLowerCase();
+
+  for (let i = 0; i < maxIterations; i++) {
+    const salt = keccak256(toHex(i));
+    const address = getCreate2Address({
+      from: deployer,
+      salt,
+      bytecodeHash: initCodeHash,
+    });
+
+    if (address.toLowerCase().startsWith('0x' + prefix)) {
+      return { salt, address };
+    }
+
+    // Log progress every 100k iterations
+    if (i % 100000 === 0 && i > 0) {
+      console.log(`   Checked ${i.toLocaleString()} salts...`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Deploy script for ERC-8004 upgradeable contracts using UUPS proxy pattern with CREATE2 vanity addresses
  */
 async function main() {
   const { viem } = await hre.network.connect();
@@ -20,24 +46,50 @@ async function main() {
   console.log("Deployer address:", deployer.account.address);
   console.log("");
 
+  // Step 0: Deploy CREATE2 Factory
+  console.log("0. Deploying CREATE2 Factory...");
+  const factory = await viem.deployContract("Create2Factory");
+  console.log("   Factory deployed at:", factory.address);
+  console.log("");
+
   // Step 1: Deploy IdentityRegistry Implementation
   console.log("1. Deploying IdentityRegistry implementation...");
   const identityRegistryImpl = await viem.deployContract("IdentityRegistryUpgradeable");
   console.log("   Implementation deployed at:", identityRegistryImpl.address);
 
-  // Step 2: Deploy IdentityRegistry Proxy
-  console.log("2. Deploying IdentityRegistry proxy...");
-  // initialize() function selector with no parameters
+  // Step 2: Deploy IdentityRegistry Proxy with vanity address 0x8004a
+  console.log("2. Deploying IdentityRegistry proxy with vanity address...");
   const identityInitCalldata = "0x8129fc1c" as `0x${string}`;
 
-  const identityProxy = await viem.deployContract("ERC1967Proxy", [
-    identityRegistryImpl.address,
-    identityInitCalldata
-  ]);
+  const proxyArtifact = await hre.artifacts.readArtifact("ERC1967Proxy");
+  const proxyBytecode = proxyArtifact.bytecode as `0x${string}`;
+
+  const identityConstructorArgs = encodeAbiParameters(
+    [{ type: "address" }, { type: "bytes" }],
+    [identityRegistryImpl.address, identityInitCalldata]
+  );
+
+  const identityInitCode = (proxyBytecode + identityConstructorArgs.slice(2)) as `0x${string}`;
+  const identityInitCodeHash = keccak256(identityInitCode);
+
+  console.log("   Mining for vanity address starting with 0x8004a...");
+  console.log("   (This may take a bit - typically ~500k attempts for 5-digit prefix)");
+  const identityVanityResult = findVanitySalt(factory.address, identityInitCodeHash, "8004a");
+
+  if (!identityVanityResult) {
+    throw new Error("Could not find vanity address after maximum iterations");
+  }
+
+  console.log("   ✅ Found salt:", identityVanityResult.salt);
+  console.log("   ✅ Predicted address:", identityVanityResult.address);
+
+  const identityDeployTx = await factory.write.deploy([identityVanityResult.salt, identityInitCode]);
+  await publicClient.waitForTransactionReceipt({ hash: identityDeployTx });
+
+  const identityProxy = await viem.getContractAt("ERC1967Proxy", identityVanityResult.address);
   console.log("   Proxy deployed at:", identityProxy.address);
   console.log("");
 
-  // Get IdentityRegistry instance through proxy
   const identityRegistry = await viem.getContractAt(
     "IdentityRegistryUpgradeable",
     identityProxy.address
@@ -48,24 +100,39 @@ async function main() {
   const reputationRegistryImpl = await viem.deployContract("ReputationRegistryUpgradeable");
   console.log("   Implementation deployed at:", reputationRegistryImpl.address);
 
-  // Step 4: Deploy ReputationRegistry Proxy
-  console.log("4. Deploying ReputationRegistry proxy...");
-  // Encode the initialize(address) call
+  // Step 4: Deploy ReputationRegistry Proxy with vanity address 0x8004b
+  console.log("4. Deploying ReputationRegistry proxy with vanity address...");
   const reputationInitCalldata = encodeAbiParameters(
     [{ name: "identityRegistry", type: "address" }],
     [identityProxy.address]
   );
-  // Prepend function selector for initialize(address): 0xc4d66de8
   const reputationInitData = ("0xc4d66de8" + reputationInitCalldata.slice(2)) as `0x${string}`;
 
-  const reputationProxy = await viem.deployContract("ERC1967Proxy", [
-    reputationRegistryImpl.address,
-    reputationInitData
-  ]);
+  const reputationConstructorArgs = encodeAbiParameters(
+    [{ type: "address" }, { type: "bytes" }],
+    [reputationRegistryImpl.address, reputationInitData]
+  );
+
+  const reputationInitCode = (proxyBytecode + reputationConstructorArgs.slice(2)) as `0x${string}`;
+  const reputationInitCodeHash = keccak256(reputationInitCode);
+
+  console.log("   Mining for vanity address starting with 0x8004b...");
+  const reputationVanityResult = findVanitySalt(factory.address, reputationInitCodeHash, "8004b");
+
+  if (!reputationVanityResult) {
+    throw new Error("Could not find vanity address for ReputationRegistry after maximum iterations");
+  }
+
+  console.log("   ✅ Found salt:", reputationVanityResult.salt);
+  console.log("   ✅ Predicted address:", reputationVanityResult.address);
+
+  const reputationDeployTx = await factory.write.deploy([reputationVanityResult.salt, reputationInitCode]);
+  await publicClient.waitForTransactionReceipt({ hash: reputationDeployTx });
+
+  const reputationProxy = await viem.getContractAt("ERC1967Proxy", reputationVanityResult.address);
   console.log("   Proxy deployed at:", reputationProxy.address);
   console.log("");
 
-  // Get ReputationRegistry instance through proxy
   const reputationRegistry = await viem.getContractAt(
     "ReputationRegistryUpgradeable",
     reputationProxy.address
@@ -76,24 +143,39 @@ async function main() {
   const validationRegistryImpl = await viem.deployContract("ValidationRegistryUpgradeable");
   console.log("   Implementation deployed at:", validationRegistryImpl.address);
 
-  // Step 6: Deploy ValidationRegistry Proxy
-  console.log("6. Deploying ValidationRegistry proxy...");
-  // Encode the initialize(address) call
+  // Step 6: Deploy ValidationRegistry Proxy with vanity address 0x8004c
+  console.log("6. Deploying ValidationRegistry proxy with vanity address...");
   const validationInitCalldata = encodeAbiParameters(
     [{ name: "identityRegistry", type: "address" }],
     [identityProxy.address]
   );
-  // Prepend function selector for initialize(address): 0xc4d66de8
   const validationInitData = ("0xc4d66de8" + validationInitCalldata.slice(2)) as `0x${string}`;
 
-  const validationProxy = await viem.deployContract("ERC1967Proxy", [
-    validationRegistryImpl.address,
-    validationInitData
-  ]);
+  const validationConstructorArgs = encodeAbiParameters(
+    [{ type: "address" }, { type: "bytes" }],
+    [validationRegistryImpl.address, validationInitData]
+  );
+
+  const validationInitCode = (proxyBytecode + validationConstructorArgs.slice(2)) as `0x${string}`;
+  const validationInitCodeHash = keccak256(validationInitCode);
+
+  console.log("   Mining for vanity address starting with 0x8004c...");
+  const validationVanityResult = findVanitySalt(factory.address, validationInitCodeHash, "8004c");
+
+  if (!validationVanityResult) {
+    throw new Error("Could not find vanity address for ValidationRegistry after maximum iterations");
+  }
+
+  console.log("   ✅ Found salt:", validationVanityResult.salt);
+  console.log("   ✅ Predicted address:", validationVanityResult.address);
+
+  const validationDeployTx = await factory.write.deploy([validationVanityResult.salt, validationInitCode]);
+  await publicClient.waitForTransactionReceipt({ hash: validationDeployTx });
+
+  const validationProxy = await viem.getContractAt("ERC1967Proxy", validationVanityResult.address);
   console.log("   Proxy deployed at:", validationProxy.address);
   console.log("");
 
-  // Get ValidationRegistry instance through proxy
   const validationRegistry = await viem.getContractAt(
     "ValidationRegistryUpgradeable",
     validationProxy.address

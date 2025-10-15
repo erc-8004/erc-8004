@@ -5,11 +5,10 @@ import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract IdentityRegistry is ERC721URIStorage, Ownable {
-    uint256 private _lastId = 0;
-
     // agentId => key => value
     mapping(uint256 => mapping(string => bytes)) private _metadata;
 
+    uint256 private _lastId = 0;
     struct MetadataEntry {
         string key;
         bytes value;
